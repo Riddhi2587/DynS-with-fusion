@@ -1,0 +1,7 @@
+torch>=2.0
+pyserini>=0.22
+pytrec_eval
+scipy>=1.10
+numpy>=1.24
+transformers>=4.30
+sentence-transformers>=2.2

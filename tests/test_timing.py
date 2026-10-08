@@ -15,14 +15,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import timing_utils
+from timing_utils import timing_utils
 from embedding_live import MiniLMEncoder, make_query_type_classifier
-from feature_cache import build_embedding_cache, build_feature_cache, build_query_type_cache
+from build_caches.feature_cache import build_embedding_cache, build_feature_cache, build_query_type_cache
 from features import build_query_features, resolve_doc_feature_layout, resolve_query_feature_layout
 from model import QPPMLP
-from time_eval_live import CSV_HEADER, resolve_live_blocks, time_queries
-from time_feature_computation import ALL_STEPS, time_dataset, time_lexical
-from timing_utils import SUMMARY_HEADER, Timer, append_rows_csv, summary_row
+from timing_utils.time_eval_live import CSV_HEADER, resolve_live_blocks, time_queries
+from timing_utils.time_feature_computation import ALL_STEPS, time_dataset, time_lexical
+from timing_utils.timing_utils import SUMMARY_HEADER, Timer, append_rows_csv, summary_row
 
 EMB_DIM = 8
 
@@ -227,7 +227,7 @@ def test_encoder_wrapper_uses_injected_model_and_returns_float32():
 
 import json
 
-import time_feature_computation as tfc
+from timing_utils import time_feature_computation as tfc
 
 POOL_QUERIES = {str(i): f"query number {i} about llamas" for i in range(1, 13)}
 
@@ -367,146 +367,3 @@ def test_main_errors_when_asking_for_more_queries_than_pool(tmp_path, monkeypatc
     with pytest.raises(SystemExit, match="only 12"):
         tfc.main()
 
-
-# ---- feature samples (feature_samples.py + both scripts) ----------------------
-
-import feature_samples as fs
-import time_eval_live as tel
-
-
-def _correct_lexical(raw):
-    return build_query_features(raw.lower().split(), FakeIndexStats())
-
-
-def test_pick_sample_qids():
-    qids = list(POOL_QUERIES)
-    a = fs.pick_sample_qids(qids, 10, seed=1)
-    assert len(a) == 10 and set(a) <= set(qids)
-    assert fs.pick_sample_qids(qids, 10, seed=1) == a
-    assert fs.pick_sample_qids(reversed(qids), 10, seed=1) == a  # input order irrelevant
-    assert set(fs.pick_sample_qids(qids, 10, seed=2)) != set(a)
-    assert sorted(fs.pick_sample_qids(qids, 99, seed=1)) == sorted(qids)  # fewer than n -> all
-
-
-def test_describe_query_lexical_self_check():
-    raw = "What is a llama llama"
-    entry = fs.describe_query("1", raw, lexical=_correct_lexical(raw), index_stats=FakeIndexStats())
-    lex = entry["lexical"]
-    assert list(lex["values"]) == fs.LEXICAL_FEATURE_NAMES
-    assert lex["tokens"] == ["what", "is", "a", "llama", "llama"]
-    assert lex["per_term_idf"]["llama"] == pytest.approx(0.5)
-    assert lex["values"]["num_query_terms"] == 5 and lex["values"]["num_unique_query_terms"] == 4
-    assert lex["recomputed_matches"] is True
-
-    bad = _correct_lexical(raw).copy()
-    bad[4] += 1.0  # corrupt sum_idf
-    assert fs.describe_query("1", raw, lexical=bad, index_stats=FakeIndexStats())[
-        "lexical"]["recomputed_matches"] is False
-
-
-def test_describe_query_without_index_stats_omits_idf_detail():
-    raw = "llama farm"
-    lex = fs.describe_query("1", raw, lexical=_correct_lexical(raw))["lexical"]
-    assert set(lex) == {"values"}
-
-
-def test_describe_query_embedding_query_type_and_omitted_blocks():
-    emb = np.arange(1, EMB_DIM + 1, dtype=np.float32)
-    emb /= np.linalg.norm(emb)
-    entry = fs.describe_query(
-        "1", "q", embedding=emb, query_type=np.array([1.0], dtype=np.float32),
-    )
-    assert entry["embedding"]["dim"] == EMB_DIM
-    assert entry["embedding"]["l2_norm"] == pytest.approx(1.0, abs=1e-6)
-    assert len(entry["embedding"]["values"]) == EMB_DIM
-    assert entry["query_type"] == {"value": 1.0, "label": "natural_language"}
-    assert "lexical" not in entry
-    assert fs.describe_query("1", "q", query_type=np.array([0.0]))["query_type"]["label"] == "keyword"
-    assert set(fs.describe_query("1", "q")) == {"qid", "query"}
-
-
-def test_write_feature_samples_round_trips(tmp_path):
-    entry = fs.describe_query(
-        "1", "llama farm", _correct_lexical("llama farm"), np.ones(EMB_DIM) / np.sqrt(EMB_DIM),
-        np.array([0.0]), FakeIndexStats(),
-    )
-    path = tmp_path / "sub" / "s.json"
-    fs.write_feature_samples(str(path), "train", "toy", 7, [entry], {"blocks": ["lexical"]})
-    data = json.load(open(path))
-    assert data["side"] == "train" and data["dataset"] == "toy" and data["seed"] == 7
-    assert data["n"] == 1 and data["samples"][0] == entry and data["blocks"] == ["lexical"]
-    assert data["embedding_model"] == "all-MiniLM-L6-v2"
-    assert data["lexical_feature_names"] == fs.LEXICAL_FEATURE_NAMES
-
-
-def test_build_train_samples_uses_computed_caches(tmp_path):
-    from dataset import load_run
-
-    runs = load_run([write_run(tmp_path)])
-    clf = make_query_type_classifier(pipeline_fn=fake_pipeline)
-    _, caches = time_dataset(
-        "toy", QUERIES, runs, FakeIndexStats(), clf, FakeEncoder(), torch.device("cpu"),
-    )
-    samples = tfc.build_train_samples(QUERIES, caches, FakeIndexStats(), 2, seed=0)
-    assert len(samples) == 2
-    for s in samples:
-        assert s["query"] == QUERIES[s["qid"]]
-        assert s["lexical"]["recomputed_matches"] is True
-        assert s["embedding"]["l2_norm"] == pytest.approx(1.0, abs=1e-5)
-        assert s["query_type"]["label"] in ("keyword", "natural_language")
-    assert tfc.build_train_samples(QUERIES, {}, None, 2, seed=0) == []
-
-
-def test_main_writes_train_feature_samples(tmp_path, monkeypatch):
-    q, run = _write_toy_dataset(tmp_path)
-    _patch_models(monkeypatch)
-    base = ["prog", "--dataset", "toy", q, run, "--index", "fake", "--device", "cpu"]
-
-    out = tmp_path / "out"
-    monkeypatch.setattr(sys, "argv", base + ["--output_dir", str(out)])
-    tfc.main()
-    data = json.load(open(out / "feature_samples_train_toy.json"))
-    assert data["n"] == 10 and len(data["samples"]) == 10  # default 10 of the 12 timed queries
-    assert data["blocks"] == ["embedding", "lexical", "query_type"]
-
-    out2 = tmp_path / "out2"
-    monkeypatch.setattr(sys, "argv", base + [
-        "--num_queries", "toy=6", "--num_feature_samples", "3", "--seed", "5",
-        "--output_dir", str(out2)])
-    tfc.main()
-    sampled = set((out2 / "sampled_qids_toy.txt").read_text().split())
-    got = json.load(open(out2 / "feature_samples_train_toy.json"))
-    assert len(got["samples"]) == 3 and {s["qid"] for s in got["samples"]} <= sampled
-
-    out3 = tmp_path / "out3"
-    monkeypatch.setattr(sys, "argv", base + ["--num_feature_samples", "0", "--output_dir", str(out3)])
-    tfc.main()
-    assert not (out3 / "feature_samples_train_toy.json").exists()
-
-
-def test_time_queries_keep_qids_and_build_eval_samples():
-    blocks = ("lexical", "embedding", "query_type")
-    clf = make_query_type_classifier(pipeline_fn=fake_pipeline)
-    model = make_model(blocks)
-    keep = ["2", "3"]
-    rows, live = time_queries(
-        "toy", QUERIES, blocks, FakeIndexStats(), FakeEncoder(), clf, model,
-        torch.device("cpu"), num_rankers=3, top_k=10, warmup=0, keep_qids=keep,
-    )
-    assert len(rows) == 3 and set(live) == set(keep)  # only the requested qids are kept
-    samples = tel.build_eval_samples(QUERIES, live, keep, FakeIndexStats())
-    assert [s["qid"] for s in samples] == keep
-    for s in samples:
-        assert s["lexical"]["recomputed_matches"] is True
-        assert s["embedding"]["dim"] == EMB_DIM
-        assert s["embedding"]["l2_norm"] == pytest.approx(1.0, abs=1e-5)
-
-
-def test_time_queries_first_n_and_keep_qids_combine():
-    blocks = ("lexical",)
-    _, live = time_queries(
-        "toy", QUERIES, blocks, FakeIndexStats(), None, None, make_model(blocks),
-        torch.device("cpu"), num_rankers=3, top_k=10, warmup=0,
-        keep_vectors_for=1, keep_qids=["3"],
-    )
-    assert set(live) == {"1", "3"}

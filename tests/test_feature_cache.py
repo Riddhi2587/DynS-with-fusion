@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from metrics_helper import write_metrics_csv
 from dataset import QPPQueryOnlyDataset
-from feature_cache import (
+from build_caches.feature_cache import (
     build_doc_feature_cache,
     build_embedding_cache,
     build_feature_cache,

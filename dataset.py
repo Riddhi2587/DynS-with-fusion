@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from feature_cache import FeatureCache
+from build_caches.feature_cache import FeatureCache
 from features import (
     ALL_FEATURE_BLOCKS,
     DOC_FEATURE_DIM,

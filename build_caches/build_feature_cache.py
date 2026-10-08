@@ -9,7 +9,7 @@ build_query_type_cache.py for the other two (independent) pre-retrieval
 feature caches QPPQueryOnlyDataset merges at construction time.
 
 Example:
-    python build_feature_cache.py \
+    python -m build_caches.build_feature_cache \
         --index /path/to/msmarco-passage-index \
         --run data/dl19_runs/*.res \
         --queries data/dl19-queries.tsv \
@@ -19,7 +19,7 @@ Example:
 import argparse
 import os
 
-from feature_cache import build_feature_cache, save_feature_cache
+from build_caches.feature_cache import build_feature_cache, save_feature_cache
 from features import IndexStats
 from train import load_queries
 

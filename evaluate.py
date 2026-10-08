@@ -1,34 +1,19 @@
 """
-Evaluate a trained QPPMLP: for each query, the model outputs a distribution
-over the rankers (softmax over per-ranker logits). This script reports
-classification accuracy (does the predicted top ranker match the true best
-ranker?) plus correlation between predicted probability and the true metric
-score, both overall and broken down per-ranker / per-query.
+Evaluate a trained QueryOnlyMLP: the query-features-only ablation of
+QPPMLP (see model.py, train.py). Reports classification accuracy (does
+the predicted top ranker match the true best ranker?) plus correlation
+between predicted probability and the true metric score.
 
 Example:
     python evaluate.py \
+        --index /path/to/msmarco-passage-index \
         --run data/dl20_runs.txt \
         --qrels data/dl20-passage.qrels \
         --queries data/dl20-queries.tsv \
-        --lexical_cache dl20_lexical.pkl \
-        --embedding_cache dl20_embedding.pkl \
-        --query_type_cache dl20_query_type.pkl \
-        --entity_count_cache dl20_entity_count.pkl \
-        --scs_pmi_cache dl20_scs_pmi.pkl \
-        --doc_feature_cache dl20_doc_features.pkl \
-        --model_path model_best.pt \
-        --score_norm per_ranker
-
-Lucene is never touched here - every selected --features block must come
-from a cache (see guide_docs/FEATURE_CACHE_GUIDE.md).
-
-For per_ranker, pass --ranker_map pointing at the "<model_path>.rankers.json"
-file written during training (evaluate.py looks for it automatically next to
---model_path if --ranker_map is not given).
+        --model_path model_query_only_best.pt
 """
 
 import argparse
-import collections
 import csv
 import json
 import os
@@ -39,31 +24,24 @@ import torch
 from scipy.stats import kendalltau, pearsonr, rankdata
 from torch.utils.data import DataLoader
 
-from dataset import QPPDataset, _require_metric_column, load_precomputed_metrics
-from feature_cache import load_feature_cache
-from features import ALL_FEATURE_BLOCKS, validate_feature_blocks
-from model import DEFAULT_HIDDEN_DIMS, QPPMLP
+from dataset import QPPQueryOnlyDataset, _require_metric_column, load_precomputed_metrics
+from build_caches.feature_cache import load_feature_cache, load_query_embeddings
+from features import IndexStats, QueryTypeClassifier
+from model import DEFAULT_HIDDEN_DIMS, QueryOnlyMLP
 from train import load_queries
 
 
 @torch.no_grad()
 def predict_all(model, dataset, device, batch_size=64):
-    """Returns (probs, ranker_masks), each (N_queries, num_rankers)."""
+    """Returns probs, shape (N_queries, num_rankers)."""
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     model.eval()
-    all_probs, all_masks = [], []
-    for doc_feats, list_feats, query_feats, pad_mask, ranker_mask, _ in loader:
-        logits = model(
-            doc_feats.to(device),
-            list_feats.to(device),
-            query_feats.to(device),
-            pad_mask.to(device),
-            ranker_mask.to(device),
-        )
+    all_probs = []
+    for query_feats, _labels in loader:
+        logits = model(query_feats.to(device))
         probs = torch.softmax(logits, dim=-1)
         all_probs.append(probs.cpu().numpy())
-        all_masks.append(ranker_mask.numpy())
-    return np.concatenate(all_probs, axis=0), np.concatenate(all_masks, axis=0)
+    return np.concatenate(all_probs, axis=0)
 
 
 def _corr(preds, labels):
@@ -340,9 +318,25 @@ def report(probs, labels, ranker_masks, id_to_ranker, metric="ndcg_cut.100", rbo
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--index", default=None,
+        help="Path to the Lucene index. Required as the --lexical_cache miss "
+             "fallback; omit if --lexical_cache fully covers the eval set's "
+             "queries.",
+    )
+    parser.add_argument(
+        "--query_embeddings", default=None,
+        help="Path to the eval dataset's precomputed raw query-embeddings pkl "
+             "({qid: vector}, see e.g. "
+             "data/cache/bert-query-embeddings/cls/*.cls.pkl - width is "
+             "inferred, not fixed; must match the width used at training "
+             "time). Required as the --embedding_cache miss fallback; omit "
+             "if --embedding_cache fully covers the eval set's queries.",
+    )
     parser.add_argument("--run", required=True, nargs="+")
     parser.add_argument("--qrels", required=True)
     parser.add_argument("--queries", required=True)
+    parser.add_argument("--model_path", default="model_query_only_best.pt")
     parser.add_argument(
         "--metrics_csv", required=True,
         help="Path to a precomputed per-(ranker, qid) metrics CSV (see "
@@ -350,70 +344,28 @@ def main():
              "Required - there is no pytrec_eval fallback.",
     )
     parser.add_argument(
-        "--features", nargs="+", default=None, choices=list(ALL_FEATURE_BLOCKS),
-        help="Which input feature blocks the checkpoint was trained with, any "
-             f"subset of {list(ALL_FEATURE_BLOCKS)}. Defaults to auto-detecting "
-             "'<model_path>.features.json' (saved by train.py) if present, "
-             "else falls back to all six with a warning.",
-    )
-    parser.add_argument(
         "--lexical_cache", default=None,
         help="Path to a precomputed lexical/IDF feature cache (see "
-             "build_feature_cache.py). Required if 'lexical' is in the "
-             "resolved --features - no live fallback (Lucene is never "
-             "touched here; see QPPDataset's require_caches).",
+             "build_caches/build_feature_cache.py) - the 5-dim lexical query features are "
+             "looked up from it instead of being recomputed via Lucene.",
     )
     parser.add_argument(
         "--embedding_cache", default=None,
         help="Path to a precomputed raw embedding feature cache (see "
-             "build_embedding_cache.py, built from a raw source like "
-             "data/cache/bert-query-embeddings/cls/*.cls.pkl - width is "
-             "inferred, not fixed; must match the width used at training "
-             "time). Required if 'embedding' is in the resolved --features - "
-             "no live fallback.",
+             "build_caches/build_embedding_cache.py) - the raw query representation "
+             "(variable width by source) is looked up from it instead of "
+             "being recomputed from --query_embeddings.",
     )
     parser.add_argument(
         "--query_type_cache", default=None,
         help="Path to a precomputed query_type feature cache (see "
-             "build_query_type_cache.py). Required if 'query_type' is in "
-             "the resolved --features - no live fallback.",
+             "build_caches/build_query_type_cache.py) - the 1-dim query_type flag is "
+             "looked up from it instead of being recomputed by the "
+             "classifier.",
     )
-    parser.add_argument(
-        "--entity_count_cache", default=None,
-        help="Path to a precomputed entity_count feature cache (see "
-             "build_entity_count_cache.py) - the 1-dim precomputed "
-             "named-entity count per query. Required if 'entity_count' is "
-             "in the resolved --features - no live fallback.",
-    )
-    parser.add_argument(
-        "--scs_pmi_cache", default=None,
-        help="Path to a precomputed scs_pmi feature cache (see "
-             "build_scs_pmi_cache.py) - the 3-dim precomputed "
-             "(scs, avg_pmi, max_pmi) triple per query. Required if "
-             "'scs_pmi' is in the resolved --features - no live fallback.",
-    )
-    parser.add_argument(
-        "--doc_feature_cache", default=None,
-        help="Path to a precomputed doc-content feature cache (see "
-             "build_doc_feature_cache.py) - the 8-dim Lucene-derived "
-             "per-(qid, doc_id) term features (features.DOC_TERM_FEATURE_NAMES). "
-             "Required if 'doc_feats' is in the resolved --features - no "
-             "live fallback. `score` itself always comes from the run file, "
-             "never cached.",
-    )
-    parser.add_argument("--model_path", default="model_best.pt")
-    parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument(
         "--hidden_dims", type=int, nargs="+", default=DEFAULT_HIDDEN_DIMS,
         help="Must match the hidden layer sizes used during training.",
-    )
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--score_scale", type=float, default=None)
-    parser.add_argument(
-        "--score_norm",
-        default="global",
-        choices=["global", "per_query", "per_ranker"],
-        help="Must match the value used during training.",
     )
     parser.add_argument(
         "--no_embedding_reduction", action="store_true",
@@ -421,6 +373,7 @@ def main():
              "model's architecture (embedding_proj presence and MLP input "
              "width), so a mismatch will fail to load the checkpoint.",
     )
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument(
         "--metrics",
         nargs="+",
@@ -430,29 +383,18 @@ def main():
              "a column (underscore form) in --metrics_csv.",
     )
     parser.add_argument(
-        "--rbo_p",
-        type=float,
-        default=0.8,
-        help="Persistence parameter for the Per-Query macro-average RBO "
-             "(Rank-Biased Overlap) - higher values weight agreement further "
-             "down each query's ranker ranking more heavily.",
-    )
-    parser.add_argument(
         "--ranker_map",
         default=None,
-        help="Path to the ranker->id json saved during training. Required for "
-             "per_ranker so eval rankers map to the same ids. Defaults to "
+        help="Path to the ranker->id json saved during training. Defaults to "
              "'<model_path>.rankers.json' if that file exists.",
     )
     parser.add_argument(
         "--output",
-        default=None,
+        default="predictions_query_only.csv",
         help="CSV path for per-(qid, ranker) predicted probabilities, with "
              "model/epoch columns parsed from --model_path. Rows are appended, "
              "so runs against different checkpoints accumulate in one file. "
-             "Defaults to 'predictions.csv' next to --model_path (i.e. the "
-             "same run directory as the checkpoint). Pass an empty string to "
-             "skip writing.",
+             "Pass an empty string to skip writing.",
     )
     parser.add_argument(
         "--split_path",
@@ -463,51 +405,35 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.index is None and args.lexical_cache is None:
+        parser.error("--index or --lexical_cache (or both) must be provided")
+    if args.query_embeddings is None and args.embedding_cache is None:
+        parser.error("--query_embeddings or --embedding_cache (or both) must be provided")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Which feature blocks the checkpoint was trained with. Auto-detect the
-    # sidecar next to the checkpoint if --features wasn't explicitly given
-    # (mirrors the --ranker_map/--split_path auto-detect pattern below).
-    default_features_path = args.model_path + ".features.json"
-    if args.features is not None:
-        features = args.features
-    elif os.path.exists(default_features_path):
-        with open(default_features_path) as f:
-            features = json.load(f)
-        print(f"Loaded feature blocks ({features}) from {default_features_path}")
+    if args.index:
+        index_stats = IndexStats(args.index)
     else:
-        features = list(ALL_FEATURE_BLOCKS)
-        print("WARNING: no features sidecar found; assuming all six feature "
-              "blocks (lexical+embedding+query_type+entity_count+scs_pmi+"
-              "doc_feats). Pass --features explicitly "
-              "if training used a different subset.")
-    try:
-        validate_feature_blocks(features)
-    except ValueError as e:
-        parser.error(str(e))
-    if "lexical" in features and args.lexical_cache is None:
-        parser.error("--lexical_cache is required when 'lexical' is in the resolved --features")
-    if "embedding" in features and args.embedding_cache is None:
-        parser.error("--embedding_cache is required when 'embedding' is in the resolved --features")
-    if "query_type" in features and args.query_type_cache is None:
-        parser.error("--query_type_cache is required when 'query_type' is in the resolved --features")
-    if "entity_count" in features and args.entity_count_cache is None:
-        parser.error("--entity_count_cache is required when 'entity_count' is in the resolved --features")
-    if "scs_pmi" in features and args.scs_pmi_cache is None:
-        parser.error("--scs_pmi_cache is required when 'scs_pmi' is in the resolved --features")
-    if "doc_feats" in features and args.doc_feature_cache is None:
-        parser.error("--doc_feature_cache is required when 'doc_feats' is in the resolved --features")
+        index_stats = None
+        print("No --index given; relying entirely on --lexical_cache "
+              "(a cache miss will raise).")
 
-    # Lucene is never touched here: index_stats always stays None, and
-    # require_caches=True below forbids QPPDataset from falling back to it
-    # even if it weren't - every selected block must come from a cache.
-    index_stats = None
-    lexical_cache = load_feature_cache(args.lexical_cache) if "lexical" in features else None
-    embedding_cache = load_feature_cache(args.embedding_cache) if "embedding" in features else None
-    query_type_cache = load_feature_cache(args.query_type_cache) if "query_type" in features else None
-    entity_count_cache = load_feature_cache(args.entity_count_cache) if "entity_count" in features else None
-    scs_pmi_cache = load_feature_cache(args.scs_pmi_cache) if "scs_pmi" in features else None
-    doc_feature_cache = load_feature_cache(args.doc_feature_cache) if "doc_feats" in features else None
+    if args.query_embeddings:
+        embedding_lookup = load_query_embeddings(args.query_embeddings)
+    else:
+        embedding_lookup = None
+        print("No --query_embeddings given; relying entirely on "
+              "--embedding_cache (a cache miss will raise).")
+
+    # Cheap/lazy to construct (the HF pipeline only loads on first .classify()
+    # call), so always available as the --query_type_cache miss fallback.
+    query_type_classifier = QueryTypeClassifier()
+
+    lexical_cache = load_feature_cache(args.lexical_cache) if args.lexical_cache else None
+    embedding_cache = load_feature_cache(args.embedding_cache) if args.embedding_cache else None
+    query_type_cache = load_feature_cache(args.query_type_cache) if args.query_type_cache else None
+
     queries = load_queries(args.queries)
 
     # Restrict to the held-out test topics saved during training. Auto-detect
@@ -524,8 +450,8 @@ def main():
               "--queries (this may include topics used for checkpoint selection "
               "during training).")
 
-    # Load the training ranker->id map so per-ranker stats/columns line up.
-    # Auto-detect the sidecar next to the checkpoint if not explicitly provided.
+    # Load the training ranker->id map so ranker columns line up. Auto-detect
+    # the sidecar next to the checkpoint if not explicitly provided.
     ranker_to_id = None
     default_map = args.model_path + ".rankers.json"
     map_path = args.ranker_map or (default_map if os.path.exists(default_map) else None)
@@ -533,35 +459,22 @@ def main():
         with open(map_path) as f:
             ranker_to_id = json.load(f)
         print(f"Loaded ranker map ({len(ranker_to_id)} rankers) from {map_path}")
-    else:
-        print("WARNING: no ranker map found; falling back to sorted run names. "
-              "Ranker columns may not match training if the run-file names "
-              "differ, which would misalign both per_ranker stats and the "
-              "fixed-size classification head.")
 
-    dataset = QPPDataset(
+    dataset = QPPQueryOnlyDataset(
         args.run, args.qrels, queries, index_stats,
-        args.top_k, args.score_scale, args.score_norm,
         ranker_to_id=ranker_to_id,
-        metrics_csv=args.metrics_csv,
         lexical_cache=lexical_cache,
         embedding_cache=embedding_cache,
         query_type_cache=query_type_cache,
-        entity_count_cache=entity_count_cache,
-        scs_pmi_cache=scs_pmi_cache,
-        doc_feature_cache=doc_feature_cache,
-        require_caches=True,
-        feature_blocks=features,
+        embedding_lookup=embedding_lookup,
+        query_type_classifier=query_type_classifier,
+        metrics_csv=args.metrics_csv,
     )
 
-    model = QPPMLP(
-        doc_feature_dim=dataset.doc_feature_dim,
-        list_feature_dim=dataset.list_feature_dim,
+    model = QueryOnlyMLP(
         query_feature_dim=dataset.query_feature_dim,
         embedding_slice=dataset.embedding_slice,
-        top_k=args.top_k,
         hidden_dims=args.hidden_dims,
-        score_norm=args.score_norm,
         num_rankers=dataset.num_rankers,
         reduce_embedding=not args.no_embedding_reduction,
     ).to(device)
@@ -570,17 +483,18 @@ def main():
     id_to_ranker = {v: k for k, v in dataset.ranker_to_id.items()}
     qids = [s["qid"] for s in dataset.samples]
 
-    probs, ranker_masks = predict_all(model, dataset, device, args.batch_size)
+    probs = predict_all(model, dataset, device, args.batch_size)
+    # Every ranker is always present in this data (QPPQueryOnlyDataset has no
+    # ranker_mask); synthesize an all-True mask for the reporting helpers
+    # above, which also handle masked (partial-ranker) data.
+    ranker_masks = np.ones((len(qids), dataset.num_rankers), dtype=bool)
 
     if args.output != "":
-        output_path = args.output or os.path.join(
-            os.path.dirname(args.model_path) or ".", "predictions.csv"
-        )
-        save_predictions(output_path, args.model_path, qids, probs, ranker_masks, id_to_ranker)
+        save_predictions(args.output, args.model_path, qids, probs, ranker_masks, id_to_ranker)
 
     for metric in args.metrics:
         labels = compute_labels_matrix(qids, id_to_ranker, metric, args.metrics_csv)
-        report(probs, labels, ranker_masks, id_to_ranker, metric, rbo_p=args.rbo_p)
+        report(probs, labels, ranker_masks, id_to_ranker, metric)
 
 
 if __name__ == "__main__":

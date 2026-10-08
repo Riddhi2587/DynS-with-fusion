@@ -12,7 +12,7 @@ precomputed query-embeddings pkl, so every qid in --queries gets one
 directly.
 
 Example:
-    python build_embedding_cache.py \
+    python -m build_caches.build_embedding_cache \
         --queries data/dl19-queries.tsv \
         --query_embeddings ../data/cache/bert-query-embeddings/cls/dl19.cls.pkl \
         --output dl19_embedding_features.pkl
@@ -21,7 +21,7 @@ Example:
 import argparse
 import os
 
-from feature_cache import build_embedding_cache, load_query_embeddings, save_feature_cache
+from build_caches.feature_cache import build_embedding_cache, load_query_embeddings, save_feature_cache
 from train import load_queries
 
 

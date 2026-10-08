@@ -16,15 +16,11 @@ Columns of eval_timing_<dataset>.csv:
                 tensors and masks QPPDataset would yield + move to device
   mlp_s         QPPMLP forward + softmax
 A block the checkpoint wasn't trained with is skipped and its column left blank.
---num_feature_samples N (default 10) additionally saves the live lexical/embedding/
-query_type values of N random queries - the exact vectors fed to the MLP - to
-feature_samples_eval_<dataset>.json for sanity-checking (see feature_samples.py);
-they're read from the timed run and described after timing, so timings are unaffected.
 Only the lexical/embedding/query_type blocks have a live path here, so the
 checkpoint's features must be a subset of those.
 
 Example:
-    python time_eval_live.py \
+    python -m timing_utils.time_eval_live \
         --dataset dl19 --queries data/dl19-queries.tsv \
         --index /path/to/msmarco-passage-index \
         --model_path runs/model_..._epoch40.pt \
@@ -41,7 +37,6 @@ import numpy as np
 import torch
 
 from embedding_live import MiniLMEncoder, default_device, make_query_type_classifier
-from feature_samples import describe_query, pick_sample_qids, write_feature_samples
 from features import (
     ALL_FEATURE_BLOCKS,
     build_embedding_feature,
@@ -52,7 +47,7 @@ from features import (
     validate_feature_blocks,
 )
 from model import DEFAULT_HIDDEN_DIMS, QPPMLP
-from timing_utils import Timer, append_rows_csv, device_str, write_env_json
+from timing_utils.timing_utils import Timer, append_rows_csv, device_str, write_env_json
 from train import load_queries
 
 LIVE_BLOCKS = ("lexical", "embedding", "query_type")
@@ -126,14 +121,12 @@ def time_queries(
     keep_idf_cache: bool = False,
     warmup: int = 3,
     keep_vectors_for: int = 0,
-    keep_qids=None,
 ):
     """Times every query in `queries`. Returns (rows, live_vectors) where rows
     are CSV_HEADER dicts and live_vectors holds {block: vector} - the exact
     vectors that fed the model - for the first `keep_vectors_for` queries (the
-    optional cache cross-check) plus every qid in `keep_qids` (the saved feature
-    samples). Keeping them is a dict store outside every timed region."""
-    keep_qids = set(keep_qids or ())
+    optional cache cross-check). Keeping them is a dict store outside every
+    timed region."""
     dev = device_str(device)
     doc_dim, list_dim, _, _ = resolve_doc_feature_layout(blocks)
 
@@ -170,7 +163,7 @@ def time_queries(
     for i, (qid, raw) in enumerate(queries.items()):
         timings: Dict[str, float] = {}
         feats = run_one(qid, raw, timings)
-        if i < keep_vectors_for or qid in keep_qids:
+        if i < keep_vectors_for:
             live_vectors[qid] = feats
         total = sum(timings.values())
         fmt = lambda k: f"{timings[k]:.6f}" if k in timings else ""
@@ -183,23 +176,10 @@ def time_queries(
     return rows, live_vectors
 
 
-def build_eval_samples(queries, live_vectors, sample_qids, index_stats) -> List[Dict]:
-    """feature_samples.describe_query for each sampled qid, from the live vectors
-    time_queries kept. Run after timing (it does IDF lookups)."""
-    samples = []
-    for qid in sample_qids:
-        feats = live_vectors[qid]
-        samples.append(describe_query(
-            qid, queries[qid], feats.get("lexical"), feats.get("embedding"),
-            feats.get("query_type"), index_stats,
-        ))
-    return samples
-
-
 def check_against_caches(live_vectors, cache_paths: Dict[str, str], atol: float = 1e-4) -> int:
     """Correctness cross-check (NOT timed): live vectors vs the cached ones for the
     qids we kept. Returns the number of mismatching (qid, block) pairs."""
-    from feature_cache import load_feature_cache
+    from build_caches.feature_cache import load_feature_cache
 
     mismatches = 0
     for block, path in cache_paths.items():
@@ -264,15 +244,6 @@ def main():
                              "lexical=dl19_lexical.pkl embedding=dl19_embedding.pkl "
                              "query_type=dl19_query_type.pkl. Not timed.")
     parser.add_argument("--check_n", type=int, default=20)
-    parser.add_argument(
-        "--num_feature_samples", type=int, default=10,
-        help="Save the live lexical/embedding/query_type values (the exact vectors fed to "
-             "the MLP) of this many random queries to "
-             "<output_dir>/feature_samples_eval_<dataset>.json for sanity-checking "
-             "(default 10; 0 disables).",
-    )
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Seed for picking the --num_feature_samples queries (default 42).")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else default_device()
@@ -330,14 +301,11 @@ def main():
 
     print(f"[{args.dataset}] timing {len(queries)} queries live "
           f"(blocks={list(blocks)}, device={device})...")
-    sample_qids = pick_sample_qids(queries, args.num_feature_samples, args.seed) \
-        if args.num_feature_samples > 0 else []
     rows, live_vectors = time_queries(
         args.dataset, queries, blocks, index_stats, encoder, classifier, model,
         device, num_rankers, args.top_k, keep_idf_cache=args.keep_idf_cache,
         warmup=args.warmup,
         keep_vectors_for=args.check_n if args.check_against_cache else 0,
-        keep_qids=sample_qids,
     )
 
     out_csv = os.path.join(args.output_dir, f"eval_timing_{args.dataset}.csv")
@@ -356,21 +324,9 @@ def main():
           f"p95={np.percentile(total, 95):.4f}")
     print(f"CSV -> {out_csv}")
 
-    # After the whole timing loop: describe_query does IDF lookups.
-    if sample_qids:
-        samples = build_eval_samples(queries, live_vectors, sample_qids, index_stats)
-        samples_path = os.path.join(args.output_dir, f"feature_samples_eval_{args.dataset}.json")
-        write_feature_samples(samples_path, "eval", args.dataset, args.seed, samples, {
-            "blocks": list(blocks), "model_path": args.model_path, "n_queries": len(queries),
-        })
-        print(f"  saved {len(samples)} feature samples -> {samples_path}")
-
     if args.check_against_cache:
         cache_paths = dict(spec.split("=", 1) for spec in args.check_against_cache)
-        first_n = set(list(queries)[: args.check_n])  # not the extra feature-sample qids
-        check_against_caches(
-            {q: v for q, v in live_vectors.items() if q in first_n}, cache_paths,
-        )
+        check_against_caches(live_vectors, cache_paths)
 
 
 if __name__ == "__main__":

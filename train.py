@@ -1,7 +1,7 @@
 """
 Train QueryOnlyMLP: the query-features-only ablation of QPPMLP (see
 model.py). Saves a checkpoint after every epoch (no dev-set checkpoint
-selection) - run evaluate_query_only.py against each saved checkpoint
+selection) - run evaluate.py against each saved checkpoint
 afterward to score them on your eval set.
 
 Example:
@@ -22,7 +22,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from dataset import QPPQueryOnlyDataset, build_query_only_feature_sanity_report
-from feature_cache import load_feature_cache, load_query_embeddings
+from build_caches.feature_cache import load_feature_cache, load_query_embeddings
 from features import IndexStats, QueryTypeClassifier
 from losses import listmle_loss
 from model import DEFAULT_HIDDEN_DIMS, QueryOnlyMLP
@@ -123,20 +123,20 @@ def main():
     parser.add_argument(
         "--lexical_cache", default=None,
         help="Path to a precomputed lexical/IDF feature cache (see "
-             "build_feature_cache.py) - the 5-dim lexical query features are "
+             "build_caches/build_feature_cache.py) - the 5-dim lexical query features are "
              "looked up from it instead of being recomputed via Lucene.",
     )
     parser.add_argument(
         "--embedding_cache", default=None,
         help="Path to a precomputed raw embedding feature cache (see "
-             "build_embedding_cache.py) - the raw query representation "
+             "build_caches/build_embedding_cache.py) - the raw query representation "
              "(variable width by source) is looked up from it instead of "
              "being recomputed from --query_embeddings.",
     )
     parser.add_argument(
         "--query_type_cache", default=None,
         help="Path to a precomputed query_type feature cache (see "
-             "build_query_type_cache.py) - the 1-dim query_type flag is "
+             "build_caches/build_query_type_cache.py) - the 1-dim query_type flag is "
              "looked up from it instead of being recomputed by the "
              "classifier.",
     )
@@ -159,7 +159,7 @@ def main():
              "embedding_proj) using real computed statistics, like every "
              "other query feature. Default: off, matching the original "
              "PCA-embedding behavior of never standardizing it. Only affects "
-             "training (fit_standardization) - evaluate_query_only.py has no "
+             "training (fit_standardization) - evaluate.py has no "
              "matching flag since it loads already-fitted buffers from the "
              "checkpoint and never refits them.",
     )
@@ -169,7 +169,7 @@ def main():
              "(32) dims and feed the full raw embedding width straight into "
              "the MLP instead. Default: off (reduce, matching original "
              "behavior). Changes the model's architecture, so "
-             "evaluate_query_only.py needs the matching "
+             "evaluate.py needs the matching "
              "--no_embedding_reduction flag to reload a checkpoint trained "
              "with this set.",
     )
@@ -320,12 +320,12 @@ def main():
 
         # Every epoch gets its own checkpoint - no dev-set comparison, so there's
         # no notion of a single "best" one here. Score them against your eval set
-        # afterward (e.g. with evaluate_query_only.py, once per checkpoint).
+        # afterward (e.g. with evaluate.py, once per checkpoint).
         epoch_save_path = f"{save_stem}_epoch{epoch}{save_ext}"
         torch.save(model.state_dict(), epoch_save_path)
 
         # Ranker->id map is the same every epoch (built once from train_ds), but
-        # is saved alongside each checkpoint so evaluate_query_only.py's
+        # is saved alongside each checkpoint so evaluate.py's
         # auto-detection (<model_path>.rankers.json) keeps working per-checkpoint.
         with open(epoch_save_path + ".rankers.json", "w") as f:
             json.dump(train_ds.ranker_to_id, f, indent=2)

@@ -24,14 +24,8 @@ of all of them (seeded by --seed; the sampled qids are written to
 non-empty text and appear in a run file, so lexical, query_type and embedding
 are all timed on the SAME N queries.
 
---num_feature_samples N (default 10) also saves the computed lexical/embedding/
-query_type values of N random timed queries to
-<output_dir>/feature_samples_train_<NAME>.json so the computation can be checked
-by eye (see feature_samples.py); 0 disables. Taken from the vectors already
-computed, after timing, so it doesn't affect the timings.
-
 Example (100 random llm-judged queries, 300 random msmarco-dev queries):
-    python time_feature_computation.py \
+    python -m timing_utils.time_feature_computation \
         --dataset msmarco-dev data/msmarco-dev.queries data/msmarco-dev-runs/*.res \
         --dataset llm-judged data/llm-judged.queries data/llm-judged-runs/*.res \
         --index /path/to/msmarco-passage-index \
@@ -49,15 +43,14 @@ import numpy as np
 
 from dataset import load_run
 from embedding_live import MiniLMEncoder, default_device, make_query_type_classifier
-from feature_cache import (
+from build_caches.feature_cache import (
     FeatureCache,
     build_embedding_cache,
     build_query_type_cache,
     save_feature_cache,
 )
-from feature_samples import describe_query, pick_sample_qids, write_feature_samples
 from features import build_query_features
-from timing_utils import (
+from timing_utils.timing_utils import (
     SUMMARY_HEADER,
     Timer,
     append_rows_csv,
@@ -179,26 +172,6 @@ def sample_queries(
     return {qid: queries[qid] for qid in chosen}, len(pool)
 
 
-def build_train_samples(
-    queries: Dict[str, str], caches: Dict[str, FeatureCache], index_stats, n: int, seed: int,
-) -> List[Dict]:
-    """Descriptions (feature_samples.describe_query) of up to n random queries,
-    using the vectors time_dataset already computed - nothing is recomputed. Draws
-    from qids present in every cache that was computed. Call after all timing for
-    the dataset is finished, since describe_query does IDF lookups."""
-    if not caches:
-        return []
-    qid_sets = [set(c.query_feats) for c in caches.values()]
-    eligible = set.intersection(*qid_sets) & set(queries)
-    samples = []
-    for qid in pick_sample_qids(eligible, n, seed):
-        vec = lambda kind: caches[kind].query_feats[qid] if kind in caches else None
-        samples.append(describe_query(
-            qid, queries[qid], vec("lexical"), vec("embedding"), vec("query_type"), index_stats,
-        ))
-    return samples
-
-
 def parse_num_queries(specs: Optional[List[str]], dataset_names) -> Dict[str, int]:
     """Parse --num_queries NAME=N [NAME=N ...] into {name: N}. Raises ValueError on
     a malformed entry, a non-positive/non-integer N, a duplicate name, or a name
@@ -258,14 +231,7 @@ def main():
              "use all their queries.",
     )
     parser.add_argument("--seed", type=int, default=42,
-                        help="Seed for --num_queries sampling and for picking the "
-                             "--num_feature_samples queries (default 42).")
-    parser.add_argument(
-        "--num_feature_samples", type=int, default=10,
-        help="Save the computed lexical/embedding/query_type values of this many random "
-             "timed queries per dataset to <output_dir>/feature_samples_train_<NAME>.json "
-             "for sanity-checking (default 10; 0 disables).",
-    )
+                        help="Seed for --num_queries sampling (default 42).")
     parser.add_argument("--index", default=None,
                         help="Default Lucene index (needed for the lexical step); a "
                              "dataset's own \"index\" in --datasets_config overrides it.")
@@ -364,18 +330,6 @@ def main():
         for r in ds_rows:
             print(f"  {r['step']:<22} {r['seconds']:>12}s  n={r['n_items']}  "
                   f"mean={r['mean_per_item_s']}s  [{r['device']}]")
-
-        # After ALL timing for this dataset: describe_query does IDF lookups.
-        if args.num_feature_samples > 0:
-            samples = build_train_samples(
-                queries, caches, index_stats, args.num_feature_samples, args.seed,
-            )
-            samples_path = os.path.join(args.output_dir, f"feature_samples_train_{name}.json")
-            write_feature_samples(samples_path, "train", name, args.seed, samples, {
-                "blocks": sorted(caches),
-                "num_timed_queries": len(queries),
-            })
-            print(f"  saved {len(samples)} feature samples -> {samples_path}")
 
         if args.save_caches_dir:
             os.makedirs(args.save_caches_dir, exist_ok=True)

@@ -23,7 +23,7 @@ from dataset import (
     build_feature_sanity_report,
     build_query_only_feature_sanity_report,
 )
-from feature_cache import FeatureCache, build_doc_feature_cache
+from build_caches.feature_cache import FeatureCache, build_doc_feature_cache
 from features import (
     ALL_FEATURE_BLOCKS,
     DOC_FEATURE_DIM,

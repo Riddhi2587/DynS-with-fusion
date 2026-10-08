@@ -10,7 +10,7 @@ every qid in --queries gets classified directly, no Lucene index and no
 query-embeddings pkl needed either.
 
 Example:
-    python build_query_type_cache.py \
+    python -m build_caches.build_query_type_cache \
         --queries data/dl19-queries.tsv \
         --output dl19_querytype_features.pkl
 """
@@ -18,7 +18,7 @@ Example:
 import argparse
 import os
 
-from feature_cache import build_query_type_cache, save_feature_cache
+from build_caches.feature_cache import build_query_type_cache, save_feature_cache
 from features import QueryTypeClassifier
 from train import load_queries
 

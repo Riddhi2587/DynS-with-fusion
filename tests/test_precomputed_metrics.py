@@ -1,12 +1,7 @@
 """
 Tests for the precomputed-metrics pipeline (dataset.load_precomputed_metrics,
-QPPDataset/QPPQueryOnlyDataset's metrics_csv, evaluate.compute_labels_matrix,
-build_metrics_csv.py). See guide_docs/PRECOMPUTED_METRICS_GUIDE.md.
-
-pytrec_eval is banned from train/eval code (dataset.py/evaluate.py no longer
-import it at all) - it's used in this file only to build a golden CSV and
-independently verify build_metrics_csv.py's output, which is a test concern,
-not a training/eval one.
+QPPDataset/QPPQueryOnlyDataset's metrics_csv, evaluate.compute_labels_matrix).
+See guide_docs/PRECOMPUTED_METRICS_GUIDE.md.
 """
 
 import csv
@@ -16,12 +11,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import pytrec_eval
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from build_metrics_csv import build_metrics_csv
-from dataset import QPPDataset, QPPQueryOnlyDataset, load_precomputed_metrics, load_qrels, load_run
+from dataset import QPPDataset, QPPQueryOnlyDataset, load_precomputed_metrics
 from evaluate import compute_labels_matrix
 
 # Realistic raw embedding width (e.g. BERT/Contriever CLS) - these tests
@@ -231,24 +224,3 @@ def test_compute_labels_matrix_reads_from_csv(metrics_csv_path):
         [0.0, 0.3],   # q3: bm25 has no row -> 0.0, rm3 -> 0.3
     ], dtype=np.float32)
     np.testing.assert_array_almost_equal(labels, expected)
-
-
-def test_build_metrics_csv_matches_direct_pytrec_eval(tmp_path, run_paths, qrels_path):
-    """End-to-end sanity check (the guide's own recommended spot-check):
-    build_metrics_csv.py's output, read back via load_precomputed_metrics,
-    must match a direct pytrec_eval computation on the same run/qrels."""
-    out_path = tmp_path / "built_metrics.csv"
-    build_metrics_csv(run_paths, qrels_path, str(out_path))
-
-    lookup = load_precomputed_metrics(str(out_path))
-
-    runs = load_run(run_paths)
-    qrels = load_qrels(qrels_path)
-    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {"ndcg_cut.100"})
-    for ranker, run_data in runs.items():
-        run_for_eval = {qid: dict(doc_list) for qid, doc_list in run_data.items()}
-        results = evaluator.evaluate(run_for_eval)
-        for qid, scores in results.items():
-            expected = scores.get("ndcg_cut_100", 0.0)
-            actual = lookup.get((ranker, qid), {}).get("ndcg_cut_100", 0.0)
-            assert actual == pytest.approx(expected), (ranker, qid)

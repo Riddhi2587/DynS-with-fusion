@@ -117,7 +117,7 @@ def main():
     parser.add_argument(
         "--train_metrics_csv", required=True,
         help="Path to a precomputed per-(ranker, qid) metrics CSV (see "
-             "build_metrics_csv.py and guide_docs/PRECOMPUTED_METRICS_GUIDE.md). "
+             "guide_docs/PRECOMPUTED_METRICS_GUIDE.md). "
              "Required - there is no pytrec_eval fallback.",
     )
     parser.add_argument(

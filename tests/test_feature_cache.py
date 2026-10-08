@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from build_metrics_csv import build_metrics_csv
+from metrics_helper import write_metrics_csv
 from dataset import QPPQueryOnlyDataset
 from feature_cache import (
     build_doc_feature_cache,
@@ -120,10 +120,10 @@ def qrels_path(tmp_path):
 @pytest.fixture
 def metrics_csv_path(tmp_path, run_paths, qrels_path):
     """QPPQueryOnlyDataset requires metrics_csv (no pytrec_eval fallback) -
-    build one from the same fixture data via build_metrics_csv.py so these
+    build one from the same fixture data via metrics_helper.py so these
     feature-cache tests can still construct datasets."""
     p = tmp_path / "metrics.csv"
-    build_metrics_csv(run_paths, qrels_path, str(p))
+    write_metrics_csv(run_paths, qrels_path, str(p))
     return str(p)
 
 

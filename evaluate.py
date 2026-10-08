@@ -129,7 +129,7 @@ def compute_labels_matrix(qids, id_to_ranker, metric, metrics_csv):
     (N_queries, num_rankers) true metric-score matrix for any metric present
     as a column in metrics_csv (see dataset.load_precomputed_metrics and
     guide_docs/PRECOMPUTED_METRICS_GUIDE.md). There is no pytrec_eval
-    fallback - build a metrics CSV with build_metrics_csv.py first.
+    fallback - supply a precomputed metrics CSV.
     """
     key = metric.replace(".", "_")   # e.g. "ndcg_cut.10" -> "ndcg_cut_10"
     lookup = load_precomputed_metrics(metrics_csv)
@@ -346,7 +346,7 @@ def main():
     parser.add_argument(
         "--metrics_csv", required=True,
         help="Path to a precomputed per-(ranker, qid) metrics CSV (see "
-             "build_metrics_csv.py and guide_docs/PRECOMPUTED_METRICS_GUIDE.md). "
+             "guide_docs/PRECOMPUTED_METRICS_GUIDE.md). "
              "Required - there is no pytrec_eval fallback.",
     )
     parser.add_argument(

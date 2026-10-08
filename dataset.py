@@ -94,7 +94,7 @@ def load_precomputed_metrics(csv_path: str) -> Dict[Tuple[str, str], Dict[str, f
     {(ranker, qid): {metric_key: value}} lookup. Cached per path so repeated
     calls (once per metric, once per checkpoint) only hit disk once.
 
-    See guide_docs/PRECOMPUTED_METRICS_GUIDE.md and build_metrics_csv.py."""
+    See guide_docs/PRECOMPUTED_METRICS_GUIDE.md."""
     lookup: Dict[Tuple[str, str], Dict[str, float]] = {}
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
@@ -197,7 +197,7 @@ class QPPDataset(Dataset):
         Path to a precomputed per-(ranker, qid) metrics CSV (see
         `load_precomputed_metrics` and guide_docs/PRECOMPUTED_METRICS_GUIDE.md)
         - the nDCG@100 training label is looked up from it. Required: there
-        is no pytrec_eval fallback (build one with build_metrics_csv.py).
+        is no pytrec_eval fallback (supply a precomputed one).
 
     lexical_cache, embedding_cache, query_type_cache, entity_count_cache,
     scs_pmi_cache:
@@ -312,8 +312,8 @@ class QPPDataset(Dataset):
         if metrics_csv is None:
             raise ValueError(
                 "QPPDataset requires metrics_csv (a precomputed per-(ranker, "
-                "qid) metrics CSV) - there is no pytrec_eval fallback. Build "
-                "one with build_metrics_csv.py."
+                "qid) metrics CSV) - there is no pytrec_eval fallback. Supply "
+                "a precomputed one."
             )
         validate_feature_blocks(feature_blocks)
         # Canonicalize to ALL_FEATURE_BLOCKS's fixed order regardless of the
@@ -667,7 +667,7 @@ class QPPQueryOnlyDataset(Dataset):
         Path to a precomputed per-(ranker, qid) metrics CSV (see
         `load_precomputed_metrics` and guide_docs/PRECOMPUTED_METRICS_GUIDE.md)
         - the nDCG@100 label is looked up from it. Required: there is no
-        pytrec_eval fallback (build one with build_metrics_csv.py).
+        pytrec_eval fallback (supply a precomputed one).
     """
 
     def __init__(
@@ -688,7 +688,7 @@ class QPPQueryOnlyDataset(Dataset):
             raise ValueError(
                 "QPPQueryOnlyDataset requires metrics_csv (a precomputed "
                 "per-(ranker, qid) metrics CSV) - there is no pytrec_eval "
-                "fallback. Build one with build_metrics_csv.py."
+                "fallback. Supply a precomputed one."
             )
         self.samples: List[dict] = []
         groups: Dict[str, dict] = {}

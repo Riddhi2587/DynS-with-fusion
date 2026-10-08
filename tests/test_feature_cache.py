@@ -5,13 +5,9 @@ merge them per-qid into an identical query_feats vector whether a piece comes
 from its own cache or its own live-computation fallback, fall back correctly
 per-piece on a partial cache, and raise a clear, piece-specific error on an
 uncovered miss with no fallback available for that piece.
-
-Also covers the FOURTH cache, doc_content_feats (keyed by (qid, doc_id) -
-see guide_docs/FEATURE_CACHE_GUIDE.md), built by build_doc_feature_cache.
 """
 
 import sys
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from metrics_helper import write_metrics_csv
 from dataset import QPPQueryOnlyDataset
 from build_caches.feature_cache import (
-    build_doc_feature_cache,
     build_embedding_cache,
     build_feature_cache,
     build_query_type_cache,
@@ -30,7 +25,6 @@ from build_caches.feature_cache import (
     load_query_embeddings,
     save_feature_cache,
 )
-from features import DOC_TERM_FEATURE_NAMES, build_doc_term_features
 
 # Realistic raw embedding width (e.g. BERT/Contriever CLS) - deliberately NOT
 # features.EMBEDDING_DIM (32), which is now only the model's learned
@@ -39,17 +33,10 @@ RAW_EMBEDDING_DIM = 768
 
 
 class DummyIndexStats:
-    """Deterministic fake IndexStats - build_query_features only needs .idf();
-    doc_term_counts/bm25_tf back build_doc_term_features for the doc-cache tests."""
+    """Deterministic fake IndexStats - build_query_features only needs .idf()."""
 
     def idf(self, term):
         return float(len(term))
-
-    def doc_term_counts(self, doc_id):
-        return Counter({doc_id: 1})
-
-    def bm25_tf(self, term, tf_map, doc_len, k1=1.2, b=0.75):
-        return float(tf_map.get(term, 0))
 
 
 class DummyQueryTypeClassifier:
@@ -276,65 +263,6 @@ def test_miss_without_query_type_fallback_raises(run_paths, qrels_path, metrics_
             embedding_lookup=EMBEDDING_LOOKUP, query_type_classifier=None,
             metrics_csv=metrics_csv_path,
         )
-
-
-# --- doc_content_feats (the fourth, (qid, doc_id)-keyed cache) -------------
-
-def test_build_doc_feature_cache_keys_and_values(run_paths):
-    index_stats = DummyIndexStats()
-    cache = build_doc_feature_cache(run_paths, QUERIES, index_stats)
-
-    # RUN_ROWS: bm25.res has (q1,d1),(q1,d2),(q2,d3); rm3.res has (q1,d1)
-    # (dup, same qid+doc as bm25.res -> deduped),(q3,d4).
-    assert set(cache.doc_content_feats.keys()) == {("q1", "d1"), ("q1", "d2"), ("q2", "d3"), ("q3", "d4")}
-    assert cache.meta["num_doc_pairs"] == 4
-    assert cache.query_feats == {}
-
-    expected = build_doc_term_features("d1", QUERIES["q1"].lower().split(), index_stats)
-    np.testing.assert_array_equal(cache.doc_content_feats[("q1", "d1")], expected)
-    for vec in cache.doc_content_feats.values():
-        assert vec.shape == (len(DOC_TERM_FEATURE_NAMES),)
-
-
-def test_build_doc_feature_cache_dedups_across_rankers(run_paths):
-    """(q1, d1) appears in both bm25.res and rm3.res - must be computed (and
-    stored) once, not once per ranker."""
-    index_stats = DummyIndexStats()
-    cache = build_doc_feature_cache(run_paths, QUERIES, index_stats)
-    assert len([k for k in cache.doc_content_feats if k == ("q1", "d1")]) == 1
-
-
-def test_doc_feature_cache_save_load_round_trip(run_paths, tmp_path):
-    index_stats = DummyIndexStats()
-    cache = build_doc_feature_cache(run_paths, QUERIES, index_stats)
-
-    path = str(tmp_path / "doc_cache.pkl")
-    save_feature_cache(cache, path)
-    loaded = load_feature_cache(path)
-
-    assert loaded.doc_content_feats.keys() == cache.doc_content_feats.keys()
-    for key in cache.doc_content_feats:
-        np.testing.assert_array_equal(loaded.doc_content_feats[key], cache.doc_content_feats[key])
-
-
-def test_load_feature_cache_backfills_missing_doc_content_feats(tmp_path):
-    """Regression test for an AttributeError hit in practice: FeatureCache
-    pickles saved before doc_content_feats existed (with the old 2-field
-    query_feats/meta shape) unpickle via __new__ + __dict__ update, NOT
-    __init__ - so they never get the dataclass field default and are simply
-    missing the attribute entirely, not just empty. Reproduce that exact
-    shape by deleting the key from an instance's __dict__ before pickling
-    (same effect as an old-format pickle), then confirm load_feature_cache
-    backfills it to {} instead of raising AttributeError."""
-    cache = build_feature_cache(run_paths=[], queries={}, index_stats=DummyIndexStats())
-    del cache.__dict__["doc_content_feats"]
-    assert "doc_content_feats" not in cache.__dict__
-
-    path = str(tmp_path / "old_format_cache.pkl")
-    save_feature_cache(cache, path)
-
-    loaded = load_feature_cache(path)  # must not raise AttributeError
-    assert loaded.doc_content_feats == {}
 
 
 # --- load_query_embeddings: infer-and-validate-consistency (raw, variable width) ---

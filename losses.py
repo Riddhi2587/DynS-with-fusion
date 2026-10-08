@@ -1,5 +1,5 @@
 """
-Listwise ranking losses for QPPMLP.
+Listwise ranking losses for QueryOnlyMLP.
 
 listmle_loss is adapted from allRank's listMLE.py
 (https://github.com/allegro/allRank/blob/master/allrank/models/losses/listMLE.py).
@@ -27,7 +27,7 @@ def listmle_loss(
     by y_pred.
 
     Args:
-        y_pred: (B, R) predicted scores (e.g. QPPMLP's per-ranker logits).
+        y_pred: (B, R) predicted scores (e.g. QueryOnlyMLP's per-ranker logits).
         y_true: (B, R) ground-truth relevance, e.g. per-ranker NDCG - higher is better.
         mask:   (B, R) bool, True where the ranker is present/valid for that query.
         eps:    numerical-stability epsilon for the log.

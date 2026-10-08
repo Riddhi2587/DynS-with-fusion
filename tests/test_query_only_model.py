@@ -50,7 +50,7 @@ def test_query_only_mlp_input_dim_matches_query_feature_dim(num_rankers):
 
 def test_query_only_mlp_has_no_doc_buffers_or_modules():
     """QueryOnlyMLP must carry no doc-feature state at all - a regression
-    guard so the doc-side of QPPMLP never leaks back in."""
+    guard so no doc-side state is ever added."""
     model = QueryOnlyMLP(query_feature_dim=TEST_QUERY_DIM, num_rankers=4)
     buffer_names = dict(model.named_buffers()).keys()
     assert "doc_mean" not in buffer_names
@@ -81,8 +81,8 @@ def test_embedding_slice_omitted_means_no_embedding_proj():
     """QueryOnlyMLP no longer auto-detects the embedding block from
     query_feature_dim alone (that heuristic couldn't disambiguate a
     variable-width raw embedding) - embedding_slice must be passed
-    explicitly, and omitting it means no embedding_proj at all, matching
-    QPPMLP's convention."""
+    explicitly, and omitting it means no embedding_proj at all, by
+    design."""
     model = QueryOnlyMLP(query_feature_dim=TEST_QUERY_DIM, num_rankers=2)
     assert model.embedding_slice is None
     assert model.embedding_proj is None

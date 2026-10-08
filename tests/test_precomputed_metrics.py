@@ -1,12 +1,11 @@
 """
 Tests for the precomputed-metrics pipeline (dataset.load_precomputed_metrics,
-QPPDataset/QPPQueryOnlyDataset's metrics_csv, evaluate.compute_labels_matrix).
+QPPQueryOnlyDataset's metrics_csv, evaluate.compute_labels_matrix).
 See guide_docs/PRECOMPUTED_METRICS_GUIDE.md.
 """
 
 import csv
 import sys
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dataset import QPPDataset, QPPQueryOnlyDataset, load_precomputed_metrics
+from dataset import QPPQueryOnlyDataset, load_precomputed_metrics
 from evaluate import compute_labels_matrix
 
 # Realistic raw embedding width (e.g. BERT/Contriever CLS) - these tests
@@ -25,18 +24,12 @@ RAW_EMBEDDING_DIM = 768
 
 
 class DummyIndexStats:
-    """Deterministic fake IndexStats - just enough for build_doc_features/
-    build_query_features to run without crashing; these tests only care
-    about label correctness, not feature values."""
+    """Deterministic fake IndexStats - just enough for build_query_features
+    to run without crashing; these tests only care about label correctness,
+    not feature values."""
 
     def idf(self, term):
         return float(len(term))
-
-    def doc_term_counts(self, doc_id):
-        return Counter({doc_id: 1})
-
-    def bm25_tf(self, term, tf_map, doc_len, k1=1.2, b=0.75):
-        return float(tf_map.get(term, 0))
 
 
 class DummyQueryTypeClassifier:
@@ -151,22 +144,6 @@ def metrics_csv_missing_ndcg(tmp_path):
     return str(p)
 
 
-def test_qppdataset_labels_come_from_metrics_csv(run_paths, qrels_path, metrics_csv_path):
-    ds = QPPDataset(
-        run_paths, qrels_path, QUERIES, DummyIndexStats(),
-        embedding_lookup=EMBEDDING_LOOKUP, query_type_classifier=DummyQueryTypeClassifier(),
-        metrics_csv=metrics_csv_path,
-        feature_blocks=("lexical", "embedding", "query_type", "doc_feats"),
-    )
-    labels_by_qid = {s["qid"]: s["labels"] for s in ds.samples}
-    bm25_id, rm3_id = ds.ranker_to_id["bm25"], ds.ranker_to_id["rm3"]
-
-    assert labels_by_qid["q1"][bm25_id] == pytest.approx(0.0)   # missing row
-    assert labels_by_qid["q1"][rm3_id] == pytest.approx(0.9)
-    assert labels_by_qid["q2"][bm25_id] == pytest.approx(0.7)
-    assert labels_by_qid["q3"][rm3_id] == pytest.approx(0.3)
-
-
 def test_qppqueryonlydataset_labels_come_from_metrics_csv(run_paths, qrels_path, metrics_csv_path):
     ds = QPPQueryOnlyDataset(
         run_paths, qrels_path, QUERIES, DummyIndexStats(),
@@ -182,11 +159,6 @@ def test_qppqueryonlydataset_labels_come_from_metrics_csv(run_paths, qrels_path,
     assert labels_by_qid["q3"][rm3_id] == pytest.approx(0.3)
 
 
-def test_qppdataset_requires_metrics_csv(run_paths, qrels_path):
-    with pytest.raises(ValueError, match="metrics_csv"):
-        QPPDataset(run_paths, qrels_path, QUERIES, DummyIndexStats())
-
-
 def test_qppqueryonlydataset_requires_metrics_csv(run_paths, qrels_path):
     with pytest.raises(ValueError, match="metrics_csv"):
         QPPQueryOnlyDataset(run_paths, qrels_path, QUERIES, DummyIndexStats())
@@ -194,17 +166,9 @@ def test_qppqueryonlydataset_requires_metrics_csv(run_paths, qrels_path):
 
 def test_missing_metric_column_raises(run_paths, qrels_path, metrics_csv_missing_ndcg):
     # embedding_lookup is required here purely so the raw embedding width
-    # can be resolved at construction time (feature_blocks includes
-    # "embedding") - this test is about the missing-metric-column error, not
+    # can be resolved at construction time - this test is about the missing-metric-column error, not
     # embeddings, so it just needs SOME valid embedding source to reach that
     # check.
-    with pytest.raises(ValueError, match="ndcg_cut_100"):
-        QPPDataset(
-            run_paths, qrels_path, QUERIES, DummyIndexStats(),
-            metrics_csv=metrics_csv_missing_ndcg,
-            feature_blocks=("lexical", "embedding", "query_type", "doc_feats"),
-            embedding_lookup=EMBEDDING_LOOKUP,
-        )
     with pytest.raises(ValueError, match="ndcg_cut_100"):
         QPPQueryOnlyDataset(
             run_paths, qrels_path, QUERIES, DummyIndexStats(),

@@ -1,6 +1,5 @@
 """
-Evaluate a trained QueryOnlyMLP: the query-features-only ablation of
-QPPMLP (see model.py, train.py). Reports classification accuracy (does
+Evaluate a trained QueryOnlyMLP (see model.py, train.py). Reports classification accuracy (does
 the predicted top ranker match the true best ranker?) plus correlation
 between predicted probability and the true metric score.
 

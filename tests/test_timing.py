@@ -1,6 +1,5 @@
 """
-Tests for the runtime-measurement code (timing_utils, time_feature_computation,
-time_eval_live). Everything uses stubs - a fake IndexStats, a fake sentence
+Tests for the runtime-measurement code (timing_utils, time_feature_computation). Everything uses stubs - a fake IndexStats, a fake sentence
 encoder, a fake query-type pipeline - so no GPU, Lucene index or network access
 is needed.
 """
@@ -18,9 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from timing_utils import timing_utils
 from embedding_live import MiniLMEncoder, make_query_type_classifier
 from build_caches.feature_cache import build_embedding_cache, build_feature_cache, build_query_type_cache
-from features import build_query_features, resolve_doc_feature_layout, resolve_query_feature_layout
-from model import QPPMLP
-from timing_utils.time_eval_live import CSV_HEADER, resolve_live_blocks, time_queries
 from timing_utils.time_feature_computation import ALL_STEPS, time_dataset, time_lexical
 from timing_utils.timing_utils import SUMMARY_HEADER, Timer, append_rows_csv, summary_row
 
@@ -55,18 +51,6 @@ def write_run(tmp_path):
     lines = [f"{qid} Q0 d{qid} 1 5.0 toy" for qid in QUERIES]
     path.write_text("\n".join(lines) + "\n")
     return str(path)
-
-
-def make_model(blocks, num_rankers=3, top_k=10):
-    dim, _, emb_slice = resolve_query_feature_layout(
-        blocks, embedding_dim=EMB_DIM if "embedding" in blocks else None
-    )
-    doc_dim, list_dim, _, _ = resolve_doc_feature_layout(blocks)
-    return QPPMLP(
-        doc_feature_dim=doc_dim, list_feature_dim=list_dim, query_feature_dim=dim,
-        embedding_slice=emb_slice, top_k=top_k, hidden_dims=[16], num_rankers=num_rankers,
-        reduce_embedding=False,
-    )
 
 
 # ---- timing_utils -----------------------------------------------------------
@@ -147,69 +131,6 @@ def test_time_dataset_with_no_steps_does_nothing():
 
 def test_all_steps_constant():
     assert ALL_STEPS == ("lexical", "query_type", "embedding")
-
-
-# ---- time_eval_live ---------------------------------------------------------
-
-def test_time_queries_one_row_per_qid_and_live_vectors_correct():
-    blocks = ("lexical", "embedding", "query_type")
-    idx = FakeIndexStats()
-    clf = make_query_type_classifier(pipeline_fn=fake_pipeline)
-    model = make_model(blocks)
-    rows, live = time_queries(
-        "toy", QUERIES, blocks, idx, FakeEncoder(), clf, model, torch.device("cpu"),
-        num_rankers=3, top_k=10, warmup=1, keep_vectors_for=2,
-    )
-    assert [r["qid"] for r in rows] == list(QUERIES)
-    assert list(rows[0].keys()) == CSV_HEADER
-    for r in rows:
-        parts = [float(r[k]) for k in ("lexical_s", "embedding_s", "query_type_s", "assembly_s", "mlp_s")]
-        assert all(p >= 0 for p in parts)
-        assert float(r["total_s"]) == pytest.approx(sum(parts), abs=1e-5)
-        assert r["device"] == "cpu"
-    assert len(live) == 2
-    qid = "1"
-    np.testing.assert_array_equal(
-        live[qid]["lexical"], build_query_features(QUERIES[qid].lower().split(), FakeIndexStats())
-    )
-    assert live[qid]["embedding"].shape == (EMB_DIM,)
-    assert np.linalg.norm(live[qid]["embedding"]) == pytest.approx(1.0, abs=1e-5)
-
-
-def test_time_queries_clears_idf_cache_per_query_by_default():
-    blocks = ("lexical",)
-    idx = FakeIndexStats()
-    model = make_model(blocks)
-    rows, _ = time_queries(
-        "toy", {"1": "aa bb", "2": "cc"}, blocks, idx, None, None, model,
-        torch.device("cpu"), num_rankers=3, top_k=10, warmup=0,
-    )
-    assert set(idx._idf_cache) == {"cc"}  # only the last query's terms survive
-    idx2 = FakeIndexStats()
-    time_queries(
-        "toy", {"1": "aa bb", "2": "cc"}, blocks, idx2, None, None, model,
-        torch.device("cpu"), num_rankers=3, top_k=10, warmup=0, keep_idf_cache=True,
-    )
-    assert set(idx2._idf_cache) == {"aa", "bb", "cc"}
-
-
-def test_time_queries_lexical_only_leaves_other_columns_blank():
-    blocks = ("lexical",)
-    model = make_model(blocks)
-    assert model.query_feature_dim == 5
-    rows, _ = time_queries(
-        "toy", QUERIES, blocks, FakeIndexStats(), None, None, model,
-        torch.device("cpu"), num_rankers=3, top_k=10, warmup=0,
-    )
-    for r in rows:
-        assert r["embedding_s"] == "" and r["query_type_s"] == ""
-        assert float(r["lexical_s"]) >= 0 and float(r["mlp_s"]) >= 0
-
-
-def test_resolve_live_blocks():
-    assert resolve_live_blocks(["query_type", "lexical"]) == ("lexical", "query_type")
-    with pytest.raises(ValueError, match="no live"):
-        resolve_live_blocks(["lexical", "doc_feats"])
 
 
 def test_encoder_wrapper_uses_injected_model_and_returns_float32():

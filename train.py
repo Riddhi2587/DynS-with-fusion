@@ -1,6 +1,5 @@
 """
-Train QueryOnlyMLP: the query-features-only ablation of QPPMLP (see
-model.py). Saves a checkpoint after every epoch (no dev-set checkpoint
+Train QueryOnlyMLP (see model.py). Saves a checkpoint after every epoch (no dev-set checkpoint
 selection) - run evaluate.py against each saved checkpoint
 afterward to score them on your eval set.
 

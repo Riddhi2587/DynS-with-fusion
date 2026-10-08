@@ -1,6 +1,6 @@
 """
-Shared helpers for the runtime-measurement scripts (time_feature_computation.py,
-time_eval_live.py) and train.py's timing instrumentation.
+Shared helpers for the runtime-measurement scripts (time_feature_computation.py)
+and train.py's timing instrumentation.
 
 Timer wraps time.perf_counter() with a torch.cuda.synchronize() before and
 after the timed region whenever `device` is a CUDA device, so asynchronous GPU
